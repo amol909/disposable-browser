@@ -13,6 +13,10 @@ struct SettingsView: View {
     @AppStorage("searchEngine") private var engine = SearchEngine.google.rawValue
     @AppStorage("searchSelectionOnOpen") private var searchSelectionOnOpen = false
     @AppStorage("browserViewMode") private var viewMode = "Mobile"
+    @AppStorage(ClipboardSelection.settingKey) private var copyFallback = false
+    /// macOS sends no notification for Accessibility changes, so Settings checks every second.
+    @State private var hasAccess = AXIsProcessTrusted()
+    private let accessCheck = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -21,7 +25,7 @@ struct SettingsView: View {
             } else {
                 controls.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
-            Text("Allow Disposable Browser in System Settings → Privacy & Security → Accessibility. Some apps do not expose selected text. Without access or a selection, opening falls back to manual search.")
+            Text("Allow Disposable Browser in System Settings → Privacy & Security → Accessibility. If the status shows not allowed while the switch there is on, remove and re-add the app. Some apps do not expose selected text; without a selection, opening falls back to manual search.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Closing discards the page, not cookies or logins. This is not private browsing.")
@@ -38,6 +42,13 @@ struct SettingsView: View {
             Toggle("Search selected text when opening", isOn: $searchSelectionOnOpen)
                 .toggleStyle(.switch)
             KeyboardShortcuts.Recorder("Search selected text (optional):", name: .searchSelection)
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Copy selection when it can't be read", isOn: $copyFallback)
+                    .toggleStyle(.switch)
+                Text("For apps that hide their text from Accessibility, such as some terminals. Uses a copy that app made in the last 15 seconds (copy-on-select); otherwise sends Copy, then restores your clipboard.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Picker("Search engine", selection: $engine) {
                 ForEach(SearchEngine.allCases, id: \.rawValue) { engine in
                     Text(engine.rawValue).tag(engine.rawValue)
@@ -48,7 +59,15 @@ struct SettingsView: View {
                 Text("Desktop").tag("Desktop")
             }
             .pickerStyle(.segmented)
-            Button("Enable selected-text access…") { Selection.requestPermission() }
+            HStack(spacing: 8) {
+                Label(hasAccess ? "Selected-text access allowed" : "Selected-text access not allowed",
+                      systemImage: hasAccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(hasAccess ? .green : .orange)
+                if !hasAccess {
+                    Button("Enable…") { Selection.requestPermission() }
+                }
+            }
+            .onReceive(accessCheck) { _ in hasAccess = AXIsProcessTrusted() }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -82,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(editItem)
         NSApp.mainMenu = mainMenu
         browser = BrowserPanel()
+        ClipboardSelection.startWatching()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "globe", accessibilityDescription: "Disposable Browser")
         let menu = NSMenu()
@@ -96,18 +116,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if KeyboardShortcuts.getShortcut(for: .toggleBrowser) == nil { openSettings() }
     }
 
+    private static let accessNotice = "Enable Accessibility access from Settings to search selected text."
+
     private func toggleBrowser() {
         let action = BrowserShortcut.action(
             isVisible: browser.panel.isVisible,
-            searchSelection: UserDefaults.standard.bool(forKey: "searchSelectionOnOpen")
+            searchSelection: UserDefaults.standard.bool(forKey: "searchSelectionOnOpen"),
+            hasAccess: AXIsProcessTrusted()
         ) {
             guard let app = NSWorkspace.shared.frontmostApplication,
-                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+                Selection.log.notice("read skipped: Disposable Browser is the frontmost app")
+                return nil
+            }
             return Selection.read(from: app)
         }
         switch action {
         case .dismiss: browser.dismiss()
         case .open(let query): browser.show(query: query)
+        case .needsAccess: browser.show(notice: Self.accessNotice)
         }
     }
 
@@ -119,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         guard AXIsProcessTrusted() else {
-            browser.show(notice: "Enable Accessibility access from Settings to search selected text.")
+            browser.show(notice: Self.accessNotice)
             return
         }
         guard let text = Selection.read(from: app) else {

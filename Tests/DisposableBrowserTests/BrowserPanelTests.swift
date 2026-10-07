@@ -5,8 +5,40 @@ import XCTest
 
 final class BrowserPanelTests: XCTestCase {
     @MainActor
-    private func headerViews(_ browser: BrowserPanel) -> [NSView] {
-        browser.panel.toolbar?.items.compactMap(\.view) ?? []
+    private func searchField(_ browser: BrowserPanel) -> NSSearchField {
+        browser.panel.toolbar!.items.compactMap { ($0 as? NSSearchToolbarItem)?.searchField }.first!
+    }
+
+    @MainActor
+    private func iconItems(_ browser: BrowserPanel) -> [NSToolbarItem] {
+        browser.panel.toolbar!.items.filter { !($0 is NSSearchToolbarItem) }
+    }
+
+    @MainActor
+    private func descendants(_ view: NSView) -> [NSView] {
+        [view] + view.subviews.flatMap { descendants($0) }
+    }
+
+    @MainActor
+    private func noticeLabel(_ browser: BrowserPanel) -> NSTextField {
+        descendants(browser.panel.contentView!).compactMap { $0 as? NSTextField }
+            .first { $0.stringValue != "A quick look?" }!
+    }
+
+    /// Waits until a panel frame animation finishes.
+    @MainActor
+    private func settle(_ panel: NSPanel) async throws {
+        var last = NSRect.zero
+        for _ in 0..<60 {
+            try await Task.sleep(for: .milliseconds(80))
+            if panel.frame == last { return }
+            last = panel.frame
+        }
+    }
+
+    @MainActor
+    private func isShown(_ view: NSView) -> Bool {
+        sequence(first: view, next: \.superview).allSatisfy { !$0.isHidden }
     }
 
     @MainActor
@@ -17,12 +49,13 @@ final class BrowserPanelTests: XCTestCase {
         browser.show()
         XCTAssertEqual(browser.panel.titleVisibility, .hidden)
         XCTAssertEqual(browser.panel.toolbarStyle, .unifiedCompact)
-        let buttons = headerViews(browser).compactMap { $0 as? NSButton }
-        XCTAssertEqual(buttons.map { $0.accessibilityLabel() }, ["Back", "Open in Browser"])
-        XCTAssertEqual(buttons.map(\.toolTip), ["Back", "Open in Browser"])
-        XCTAssertTrue(buttons.allSatisfy { !$0.isEnabled && $0.title.isEmpty && $0.image != nil })
-        let message = browser.panel.contentView!.subviews.compactMap { $0 as? NSTextField }.first!
-        XCTAssertTrue(message.isHidden)
+        let order = browser.panel.toolbar!.items.map { $0 is NSSearchToolbarItem ? "search" : $0.label }
+        XCTAssertEqual(order, ["Back", "search", "Open in Browser"])
+        let icons = iconItems(browser)
+        XCTAssertEqual(icons.map { $0.image?.accessibilityDescription }, ["Back", "Open in Browser"])
+        XCTAssertEqual(icons.map(\.toolTip), ["Back", "Open in Browser"])
+        XCTAssertTrue(icons.allSatisfy { !$0.isEnabled && $0.isBordered && $0.image != nil })
+        XCTAssertFalse(isShown(noticeLabel(browser)))
     }
 
     @MainActor
@@ -31,9 +64,7 @@ final class BrowserPanelTests: XCTestCase {
         let browser = BrowserPanel()
         defer { browser.dismiss() }
         browser.show()
-        let header = headerViews(browser)
-        let search = header.compactMap { $0 as? NSSearchField }.first!
-        let external = header.compactMap { $0 as? NSButton }.last!
+        let search = searchField(browser)
         for width: CGFloat in [460, 360] {
             var frame = browser.panel.frame
             frame.size.width = width
@@ -51,9 +82,9 @@ final class BrowserPanelTests: XCTestCase {
             let searchFrame = search.convert(search.bounds, to: nil)
             XCTAssertGreaterThanOrEqual(searchFrame.minX, lightsRight)
             XCTAssertGreaterThanOrEqual(searchFrame.width, 100)
-            XCTAssertLessThanOrEqual(external.convert(external.bounds, to: nil).maxX, width)
+            XCTAssertLessThanOrEqual(searchFrame.maxX, width - 40, "Leave room for Open in Browser")
             XCTAssertTrue(search.window === browser.panel)
-            XCTAssertTrue(external.window === browser.panel)
+            XCTAssertEqual(browser.panel.toolbar!.visibleItems?.count, 3, "No item may move to overflow")
             XCTAssertTrue((browser.panel.firstResponder as? NSTextView)?.delegate === search)
         }
     }
@@ -70,8 +101,8 @@ final class BrowserPanelTests: XCTestCase {
         frame.size = browser.windowWillResize(browser.panel, to: frame.size)
         browser.panel.setFrame(frame, display: true)
         browser.panel.contentView?.layoutSubtreeIfNeeded()
-        let message = browser.panel.contentView!.subviews.compactMap { $0 as? NSTextField }.first!
-        XCTAssertFalse(message.isHidden)
+        let message = noticeLabel(browser)
+        XCTAssertTrue(isShown(message))
         XCTAssertEqual(message.stringValue, notice)
         XCTAssertEqual(browser.panel.frame.width, 360)
         XCTAssertGreaterThan(message.frame.height, 14, "Long notices must wrap rather than widen the panel")
@@ -83,62 +114,96 @@ final class BrowserPanelTests: XCTestCase {
         browser.webView(web, didFailProvisionalNavigation: nil, withError: failure)
         XCTAssertEqual(message.stringValue, failure.localizedDescription)
         browser.webView(web, didFinish: nil)
-        XCTAssertTrue(message.isHidden)
+        XCTAssertFalse(isShown(message))
         XCTAssertTrue(message.stringValue.isEmpty)
-        browser.panel.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertEqual(message.frame.height, 0)
     }
 
     @MainActor
-    func testGlassWaitingStateIsReplacedByNavigationAndRestoredOnReopen() async {
+    func testCollapsedBarExpandsForNavigationAndCollapsesOnReopen() async throws {
         _ = NSApplication.shared
         let browser = BrowserPanel()
         defer { browser.dismiss() }
-        func descendants(_ view: NSView) -> [NSView] {
-            [view] + view.subviews.flatMap { descendants($0) }
-        }
         browser.show()
-        let root = browser.panel.contentView!
+        let panel = browser.panel
+        let root = panel.contentView!
         let material = root as! NSVisualEffectView
-        XCTAssertEqual(material.material, .hudWindow)
+        XCTAssertEqual(material.material, .popover)
         XCTAssertEqual(material.blendingMode, .behindWindow)
         XCTAssertEqual(material.state, .followsWindowActiveState)
-        XCTAssertTrue(browser.panel.styleMask.contains(.fullSizeContentView))
-        root.layoutSubtreeIfNeeded()
-        XCTAssertEqual(root.frame.height, browser.panel.frame.height, accuracy: 1)
-        let glass = root.subviews.first!
+        XCTAssertTrue(panel.styleMask.contains(.fullSizeContentView))
+        let toolbarHeight = panel.frame.height - panel.contentLayoutRect.height
+        XCTAssertEqual(panel.frame.height, toolbarHeight, accuracy: 1, "Waiting shows only the toolbar")
+        XCTAssertLessThan(panel.frame.height, 80)
+        XCTAssertEqual(panel.minSize.height, panel.maxSize.height, "The bar resizes only horizontally")
         let web = descendants(root).compactMap { $0 as? WKWebView }.first!
-        let prompt = descendants(glass).compactMap { $0 as? NSTextField }.first!
-        XCTAssertEqual(prompt.stringValue, "A quick look?")
-        XCTAssertFalse(glass.isHidden)
-        XCTAssertTrue(web.isHidden, "An opaque blank webview must not cover the empty-state glass")
-        XCTAssertFalse(browser.panel.isOpaque)
-        XCTAssertEqual(browser.panel.backgroundColor?.alphaComponent, 0)
+        XCTAssertTrue(web.isHidden, "An opaque blank webview must not cover the bar material")
+        XCTAssertGreaterThan(web.frame.height, 300, "The hidden page waits at its expanded size")
+        XCTAssertFalse(panel.isOpaque)
+        XCTAssertEqual(panel.backgroundColor?.alphaComponent, 0)
+
+        let top = panel.frame.maxY
         browser.show(notice: "No readable selection. Type your search instead.")
-        XCTAssertFalse(glass.isHidden, "A manual-search notice must preserve the waiting state")
-        XCTAssertTrue(web.isHidden)
+        try await settle(panel)
+        XCTAssertGreaterThan(panel.frame.height, toolbarHeight + 20, "The bar grows to show a notice")
+        XCTAssertTrue(web.isHidden, "A manual-search notice must preserve the waiting state")
 
         browser.webView(web, didStartProvisionalNavigation: nil)
-        XCTAssertTrue(glass.isHidden)
         XCTAssertFalse(web.isHidden)
-        XCTAssertTrue(browser.panel.isOpaque)
+        XCTAssertTrue(panel.isOpaque)
+        try await settle(panel)
+        let expected = min(720, panel.screen!.visibleFrame.height - 24)
+        XCTAssertEqual(panel.frame.height, expected, accuracy: 1, "Navigation expands to the page height")
+        XCTAssertEqual(panel.frame.maxY, top, accuracy: 1, "The bar grows down from a fixed top edge")
+        XCTAssertGreaterThanOrEqual(panel.minSize.height, 400)
         root.layoutSubtreeIfNeeded()
+        XCTAssertEqual(web.frame, web.superview!.bounds, "After the animation, the page follows the window")
+        XCTAssertEqual(web.autoresizingMask, [.width, .height])
         let pageFrame = web.convert(web.bounds, to: root)
-        XCTAssertLessThanOrEqual(pageFrame.maxY, root.safeAreaRect.maxY)
-        XCTAssertFalse(material.isHidden, "The header must retain its full-window material during navigation")
+        let edge = root.subviews.compactMap { $0 as? NSVisualEffectView }.first { $0.blendingMode == .withinWindow }!
+        if #available(macOS 26.0, *) {
+            // The page scrolls under the glass toolbar; WebKit and the soft edge keep it legible.
+            XCTAssertEqual(pageFrame.maxY, root.bounds.maxY, accuracy: 1)
+            XCTAssertEqual(web.obscuredContentInsets.top, root.safeAreaInsets.top, accuracy: 1)
+            XCTAssertFalse(edge.isHidden)
+        } else {
+            XCTAssertLessThanOrEqual(pageFrame.maxY, root.safeAreaRect.maxY)
+            XCTAssertTrue(edge.isHidden)
+        }
         browser.webView(web, didFailProvisionalNavigation: nil,
                         withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost))
-        XCTAssertTrue(glass.isHidden, "Navigation errors must not cover the page with the prompt")
+        XCTAssertGreaterThan(panel.frame.height, 400, "Navigation errors keep the page open")
 
         browser.dismiss()
         browser.show()
         let reopenedWeb = descendants(root).compactMap { $0 as? WKWebView }.first!
-        XCTAssertFalse(glass.isHidden)
-        XCTAssertFalse(browser.panel.isOpaque)
+        XCTAssertEqual(panel.frame.height, toolbarHeight, accuracy: 1)
+        XCTAssertFalse(panel.isOpaque)
         XCTAssertTrue(reopenedWeb.isHidden)
         XCTAssertFalse(reopenedWeb === web)
         XCTAssertNil(reopenedWeb.url)
-        let search = headerViews(browser).compactMap { $0 as? NSSearchField }.first!
-        XCTAssertTrue((browser.panel.firstResponder as? NSTextView)?.delegate === search)
+        let search = searchField(browser)
+        XCTAssertTrue((panel.firstResponder as? NSTextView)?.delegate === search)
+        if #available(macOS 26.0, *) { XCTAssertTrue(edge.isHidden, "The bar needs no page edge") }
+    }
+
+    @MainActor
+    func testAddressShowsHostWhileBrowsingAndFullURLWhileEditing() async throws {
+        _ = NSApplication.shared
+        let browser = BrowserPanel()
+        defer { browser.dismiss() }
+        browser.show()
+        let search = searchField(browser)
+        let web = descendants(browser.panel.contentView!).compactMap { $0 as? WKWebView }.first!
+        browser.panel.makeFirstResponder(web)
+        let page = URL(string: "https://www.example.com/docs?q=1")!
+        web.loadHTMLString("<p>Hi</p>", baseURL: page)
+        for _ in 0..<100 where search.stringValue != "example.com" {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(search.stringValue, "example.com")
+        browser.panel.makeFirstResponder(search)
+        XCTAssertEqual(search.stringValue, page.absoluteString)
+        browser.panel.makeFirstResponder(web)
+        XCTAssertEqual(search.stringValue, "example.com")
     }
 }

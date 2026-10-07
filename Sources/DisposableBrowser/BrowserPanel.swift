@@ -2,6 +2,16 @@ import AppKit
 import WebKit
 import BrowserCore
 
+/// Search field that reports when it is about to gain keyboard focus.
+final class AddressField: NSSearchField {
+    var willFocus: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        willFocus?()
+        return super.becomeFirstResponder()
+    }
+}
+
 final class PeekPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -10,17 +20,24 @@ final class PeekPanel: NSPanel {
 @MainActor
 final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate, NSWindowDelegate, NSToolbarDelegate {
     let panel: PeekPanel
-    private let address = NSSearchField()
-    private let back = NSButton()
-    private let external = NSButton()
-    private let headerItem = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier("browserHeader"))
-    private var addressWidth: NSLayoutConstraint?
+    private let address = AddressField()
+    private let back = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier("back"))
+    private let external = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier("external"))
+    private let headerItem = NSSearchToolbarItem(itemIdentifier: NSToolbarItem.Identifier("browserHeader"))
+    private var addressWidth: NSLayoutConstraint!
+    /// Window-clipped frosted material behind the waiting state and the page.
+    private let root = NSVisualEffectView()
+    /// Soft blur behind the macOS 26 glass toolbar, standing in for a scroll edge effect.
+    private let toolbarEdge = NSVisualEffectView()
     private let message = NSTextField(labelWithString: "")
+    private let banner: NSView
+    private let progress = NSView()
+    private var progressWidth: NSLayoutConstraint!
     private let content = NSView()
-    private let emptyState: NSView
-    private var messageHeight: NSLayoutConstraint!
-    private var messageTop: NSLayoutConstraint!
-    private var contentTop: NSLayoutConstraint!
+    /// While waiting for a search, the panel is only its toolbar (and any notice).
+    private var isCollapsed = true
+    /// Expanded height, kept across lookups and updated when the person resizes the page.
+    private var expandedHeight: CGFloat = 720
     private var navigationObservers: [NSKeyValueObservation] = []
     private var webView: WKWebView?
     private var eventMonitor: Any?
@@ -37,8 +54,7 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
         panel = PeekPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 720),
                           styleMask: [.titled, .closable, .resizable, .nonactivatingPanel, .fullSizeContentView],
                           backing: .buffered, defer: false)
-        let emptyContents = NSView()
-        emptyState = emptyContents
+        banner = Self.makeBanner(around: message)
         super.init()
         panel.title = "Disposable Browser"
         panel.titleVisibility = .hidden
@@ -48,26 +64,21 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        panel.minSize = NSSize(width: 360, height: 400)
         panel.delegate = self
 
-        for (button, symbol, label, action) in [
-            (back, "chevron.left", "Back", #selector(goBack)),
-            (external, "arrow.up.right.square", "Open in Browser", #selector(openExternal))
+        // Native image items let macOS 26 draw Liquid Glass buttons (bordered buttons before 26).
+        for (item, symbol, label, action) in [
+            (back, "chevron.backward", "Back", #selector(goBack)),
+            (external, "safari", "Open in Browser", #selector(openExternal))
         ] {
-            button.title = ""
-            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-            button.imagePosition = .imageOnly
-            button.isBordered = false
-            button.contentTintColor = .secondaryLabelColor
-            button.toolTip = label
-            button.setAccessibilityLabel(label)
-            button.target = self
-            button.action = action
-            button.isEnabled = false
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.widthAnchor.constraint(equalToConstant: 24).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+            item.image = Self.toolbarIcon(symbol, label: label)
+            item.label = label
+            item.toolTip = label
+            item.isBordered = true
+            item.target = self
+            item.action = action
+            item.autovalidates = false
+            item.isEnabled = false
         }
         address.placeholderString = "Search or enter a website"
         address.setAccessibilityLabel("Search or enter a website")
@@ -78,9 +89,14 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
         address.action = #selector(submit)
         address.sendsSearchStringImmediately = false
         address.sendsWholeSearchString = true
-        addressWidth = address.widthAnchor.constraint(equalToConstant: panel.frame.width - 216)
-        addressWidth?.isActive = true
-        headerItem.view = address
+        address.willFocus = { [weak self] in self?.showAddress(editing: true) }
+        address.focusRingType = .none
+        headerItem.searchField = address
+        headerItem.resignsFirstResponderWithCancel = false
+        headerItem.preferredWidthForSearchField = Self.addressWidth(for: panel.frame.width)
+        // The preferred width alone does not shrink the field, which pushes the icons into overflow.
+        addressWidth = address.widthAnchor.constraint(equalToConstant: Self.addressWidth(for: panel.frame.width))
+        addressWidth.isActive = true
         headerItem.autovalidates = false
         let toolbar = NSToolbar(identifier: "browserToolbar")
         toolbar.delegate = self
@@ -90,45 +106,55 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
         if #unavailable(macOS 15.0) { toolbar.showsBaselineSeparator = false }
         panel.toolbar = toolbar
         message.textColor = .secondaryLabelColor
-        message.font = .systemFont(ofSize: 11)
+        message.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        message.alignment = .center
         message.maximumNumberOfLines = 0
         message.lineBreakMode = .byWordWrapping
-        message.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        message.preferredMaxLayoutWidth = panel.frame.width - 24
-        message.isHidden = true
-        // One native, window-clipped material covers both titlebar and body.
-        // Unlike a body-only glass sheet, this also filters text behind the toolbar.
-        let root = NSVisualEffectView()
-        root.material = .hudWindow
+        // Wraps at preferredMaxLayoutWidth; stays below window-size priority so it never widens the panel.
+        message.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(490), for: .horizontal)
+        message.preferredMaxLayoutWidth = Self.messageWidth(for: panel.frame.width)
+        banner.isHidden = true
+        progress.wantsLayer = true
+        progress.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        progress.alphaValue = 0
+        root.material = .popover
         root.blendingMode = .behindWindow
         root.state = .followsWindowActiveState
-        content.wantsLayer = true
         panel.contentView = root
-        for view in [emptyState, message, content] {
+        toolbarEdge.material = .headerView
+        toolbarEdge.blendingMode = .withinWindow
+        toolbarEdge.state = .followsWindowActiveState
+        toolbarEdge.maskImage = NSImage(size: NSSize(width: 1, height: 64), flipped: false) { rect in
+            // Opaque under the toolbar, fading out toward the page like the soft system edge.
+            NSGradient(colors: [.clear, .black], atLocations: [0, 0.4], colorSpace: .deviceRGB)?.draw(in: rect, angle: 90)
+            return true
+        }
+        content.wantsLayer = true
+        for view in [content, toolbarEdge, progress, banner] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
-        let prompt = NSTextField(labelWithString: "A quick look?")
-        prompt.font = .systemFont(ofSize: 20, weight: .medium)
-        prompt.textColor = .secondaryLabelColor
-        prompt.translatesAutoresizingMaskIntoConstraints = false
-        emptyContents.addSubview(prompt)
-        messageHeight = message.heightAnchor.constraint(equalToConstant: 0)
-        messageTop = message.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor)
-        contentTop = content.topAnchor.constraint(equalTo: message.bottomAnchor)
+        // On macOS 26 the page scrolls under the glass toolbar; earlier toolbars stay opaque.
+        let pageTop: NSLayoutYAxisAnchor
+        if #available(macOS 26.0, *) { pageTop = root.topAnchor } else { pageTop = root.safeAreaLayoutGuide.topAnchor }
+        progressWidth = progress.widthAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            emptyState.topAnchor.constraint(equalTo: root.topAnchor),
-            emptyState.bottomAnchor.constraint(equalTo: root.bottomAnchor),
-            emptyState.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            emptyState.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            prompt.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            prompt.centerYAnchor.constraint(equalTo: content.centerYAnchor),
-            messageHeight, messageTop, contentTop,
-            message.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            message.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            content.topAnchor.constraint(equalTo: pageTop),
             content.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            content.bottomAnchor.constraint(equalTo: root.bottomAnchor)
+            content.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            toolbarEdge.topAnchor.constraint(equalTo: root.topAnchor),
+            toolbarEdge.bottomAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 16),
+            toolbarEdge.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            toolbarEdge.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            progress.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+            progress.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            progress.heightAnchor.constraint(equalToConstant: 2),
+            progressWidth,
+            banner.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 10),
+            banner.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            banner.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: 12),
+            banner.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -12)
         ])
         setWaiting(true)
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -148,8 +174,69 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
             name: UserDefaults.didChangeNotification, object: UserDefaults.standard)
     }
 
+    /// Wraps the notice label in a floating glass (macOS 26+) or material capsule.
+    private static func makeBanner(around label: NSTextField) -> NSView {
+        let padded = NSView()
+        label.translatesAutoresizingMaskIntoConstraints = false
+        padded.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: padded.topAnchor, constant: 7),
+            label.bottomAnchor.constraint(equalTo: padded.bottomAnchor, constant: -7),
+            label.leadingAnchor.constraint(equalTo: padded.leadingAnchor, constant: 14),
+            label.trailingAnchor.constraint(equalTo: padded.trailingAnchor, constant: -14)
+        ])
+        let background: NSView
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = 14
+            glass.contentView = padded
+            background = glass
+        } else {
+            let material = NSVisualEffectView()
+            material.material = .popover
+            material.state = .active
+            material.wantsLayer = true
+            material.layer?.cornerRadius = 14
+            material.layer?.masksToBounds = true
+            material.addSubview(padded)
+            background = material
+        }
+        // Size the background from the label; glass does not size itself from its content view.
+        padded.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            padded.topAnchor.constraint(equalTo: background.topAnchor),
+            padded.bottomAnchor.constraint(equalTo: background.bottomAnchor),
+            padded.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+            padded.trailingAnchor.constraint(equalTo: background.trailingAnchor)
+        ])
+        return background
+    }
+
+    /// Draws a symbol smaller inside a fixed template canvas. The toolbar applies its own
+    /// symbol size, which otherwise fills most of the glass circle.
+    private static func toolbarIcon(_ symbol: String, label: String) -> NSImage? {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        guard let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
+            .withSymbolConfiguration(configuration) else { return nil }
+        let canvas = NSSize(width: 20, height: 20)
+        let icon = NSImage(size: canvas, flipped: false) { rect in
+            let origin = NSPoint(x: (rect.width - glyph.size.width) / 2, y: (rect.height - glyph.size.height) / 2)
+            glyph.draw(in: NSRect(origin: origin, size: glyph.size))
+            return true
+        }
+        icon.isTemplate = true
+        icon.accessibilityDescription = label
+        return icon
+    }
+
+    /// Address width that reserves native traffic lights and both icons, even at the 360pt minimum.
+    private static func addressWidth(for panelWidth: CGFloat) -> CGFloat { panelWidth - 190 }
+
+    /// Notice text width inside the banner and its window margins.
+    private static func messageWidth(for panelWidth: CGFloat) -> CGFloat { panelWidth - 52 }
+
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [headerItem.itemIdentifier, NSToolbarItem.Identifier("back"), NSToolbarItem.Identifier("external")]
+        [back.itemIdentifier, headerItem.itemIdentifier, external.itemIdentifier]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -158,47 +245,152 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        if identifier == headerItem.itemIdentifier { return headerItem }
-        let button: NSButton
-        switch identifier.rawValue {
-        case "back": button = back
-        case "external": button = external
-        default: return nil
-        }
-        let item = NSToolbarItem(itemIdentifier: identifier)
-        item.view = button
-        item.label = button.toolTip ?? ""
-        item.autovalidates = false
-        return item
+        [back, headerItem, external].first { $0.itemIdentifier == identifier }
     }
 
     func windowDidResize(_ notification: Notification) {
-        // Reserve native traffic lights and both icons even at the 360pt minimum.
-        addressWidth?.constant = panel.frame.width - 216
-        message.preferredMaxLayoutWidth = panel.frame.width - 24
+        resizeChrome(to: panel.frame.size)
     }
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         // Update before native resize layout so search does not briefly enter overflow.
-        addressWidth?.constant = frameSize.width - 216
-        message.preferredMaxLayoutWidth = frameSize.width - 24
+        resizeChrome(to: frameSize)
         return frameSize
+    }
+
+    private func resizeChrome(to size: NSSize) {
+        headerItem.preferredWidthForSearchField = Self.addressWidth(for: size.width)
+        addressWidth.constant = Self.addressWidth(for: size.width)
+        message.preferredMaxLayoutWidth = Self.messageWidth(for: size.width)
+        updateProgress()
+        updateInsets()
+    }
+
+    /// Tells the page which top area the toolbar covers, so WebKit keeps fixed headers visible.
+    private func updateInsets() {
+        guard #available(macOS 26.0, *), let web = webView else { return }
+        let top = root.safeAreaInsets.top
+        if web.obscuredContentInsets.top != top {
+            web.obscuredContentInsets = NSEdgeInsets(top: top, left: 0, bottom: 0, right: 0)
+        }
+    }
+
+    private func updateProgress() {
+        let loading = webView?.isLoading == true && !isCollapsed
+        let fraction = loading ? max(0.1, webView?.estimatedProgress ?? 0) : 1
+        progressWidth.constant = root.bounds.width * fraction
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            progress.animator().alphaValue = loading ? 1 : 0
+        }
+    }
+
+    /// Shows the full URL while editing and only the host while browsing, as Safari does.
+    private func showAddress(editing: Bool) {
+        guard let url = webView?.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+        guard !editing, let host = url.host(), !host.isEmpty else {
+            address.stringValue = url.absoluteString
+            return
+        }
+        address.stringValue = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        showAddress(editing: false)
     }
 
     private func showMessage(_ text: String = "") {
         message.stringValue = text
-        message.isHidden = text.isEmpty
-        messageHeight.isActive = text.isEmpty
-        messageTop.constant = text.isEmpty ? 0 : 8
-        contentTop.constant = text.isEmpty ? 0 : 8
+        banner.isHidden = text.isEmpty
+        // A collapsed bar grows or shrinks to fit the notice.
+        if isCollapsed && panel.isVisible { resizePanel(height: collapsedHeight(), animated: true) }
     }
 
-    private func setWaiting(_ waiting: Bool) {
-        emptyState.isHidden = !waiting
+    /// Height of the titlebar and toolbar row.
+    private var toolbarHeight: CGFloat { panel.frame.height - panel.contentLayoutRect.height }
+
+    private func collapsedHeight() -> CGFloat {
+        guard !banner.isHidden else { return toolbarHeight }
+        root.layoutSubtreeIfNeeded()
+        return toolbarHeight + banner.fittingSize.height + 20
+    }
+
+    /// Resizes the panel with its top edge fixed, so the bar grows down into the page.
+    private func resizePanel(height: CGFloat, animated: Bool) {
+        var frame = panel.frame
+        frame.origin.y = frame.maxY - height
+        frame.size.height = height
+        if let visible = panel.screen?.visibleFrame, frame.minY < visible.minY + 12 {
+            frame.origin.y = min(visible.minY + 12, visible.maxY - height)
+        }
+        // Collapsed, only the width can change; expanded, keep a usable page height.
+        panel.minSize = NSSize(width: 360, height: isCollapsed ? height : 400)
+        panel.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                               height: isCollapsed ? height : CGFloat.greatestFiniteMagnitude)
+        guard animated, panel.isVisible, frame != panel.frame,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            panel.setFrame(frame, display: true)
+            return
+        }
+        let web = isCollapsed ? nil : webView
+        if let web { pinPage(web, toPanelHeight: frame.height) }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.42
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 0.1, 0.1, 1)
+            panel.animator().setFrame(frame, display: true)
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let web, web === self.webView else { return }
+                web.autoresizingMask = [.width, .height]
+                web.frame = self.content.bounds
+            }
+        })
+    }
+
+    /// Gives the page its final size and pins it to the top, so it lays out once
+    /// instead of on every animation frame, and not at the collapsed bar's size.
+    private func pinPage(_ web: WKWebView, toPanelHeight height: CGFloat) {
+        root.layoutSubtreeIfNeeded()
+        let pageHeight = height - (root.bounds.height - content.frame.height)
+        web.autoresizingMask = [.width, .minYMargin]
+        web.frame = NSRect(x: 0, y: content.bounds.height - pageHeight,
+                           width: content.bounds.width, height: pageHeight)
+    }
+
+    private var expandedPanelHeight: CGFloat {
+        min(expandedHeight, (panel.screen?.visibleFrame.height ?? expandedHeight) - 24)
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        if isCollapsed {
+            // A narrower bar can wrap the notice onto more lines.
+            resizePanel(height: collapsedHeight(), animated: false)
+        } else {
+            expandedHeight = panel.frame.height
+        }
+    }
+
+    private func setWaiting(_ waiting: Bool, animated: Bool = true) {
+        let changed = waiting != isCollapsed
+        isCollapsed = waiting
+        if #available(macOS 26.0, *) { toolbarEdge.isHidden = waiting } else { toolbarEdge.isHidden = true }
         webView?.isHidden = waiting
         content.layer?.backgroundColor = (waiting ? NSColor.clear : .textBackgroundColor).cgColor
         panel.isOpaque = !waiting
         panel.backgroundColor = waiting ? .clear : .windowBackgroundColor
+        guard changed else { return }
+        if waiting {
+            resizePanel(height: collapsedHeight(), animated: animated)
+        } else if animated {
+            // Start after the caller's load request, so its main-thread work does not
+            // stall the first animation frames.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isCollapsed else { return }
+                self.resizePanel(height: self.expandedPanelHeight, animated: true)
+            }
+        } else {
+            resizePanel(height: expandedPanelHeight, animated: false)
+        }
     }
 
     private func updateNavigation() {
@@ -218,7 +410,6 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
         if !panel.isVisible {
             let app = NSWorkspace.shared.frontmostApplication
             if app?.processIdentifier != ProcessInfo.processInfo.processIdentifier { previousApp = app }
-            position()
             let configuration = WKWebViewConfiguration()
             configuration.websiteDataStore = .default()
             let web = WKWebView(frame: content.bounds, configuration: configuration)
@@ -233,19 +424,33 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
                     MainActor.assumeIsolated { self?.updateNavigation() }
                 },
                 web.observe(\.url, options: [.initial, .new]) { [weak self] _, _ in
-                    MainActor.assumeIsolated { self?.updateNavigation() }
+                    MainActor.assumeIsolated {
+                        self?.updateNavigation()
+                        if self?.address.currentEditor() == nil { self?.showAddress(editing: false) }
+                    }
+                },
+                web.observe(\.estimatedProgress, options: [.new]) { [weak self] _, _ in
+                    MainActor.assumeIsolated { self?.updateProgress() }
+                },
+                web.observe(\.isLoading, options: [.new]) { [weak self] _, _ in
+                    MainActor.assumeIsolated { self?.updateProgress() }
                 }
             ]
             address.stringValue = ""
             showMessage(notice ?? "")
+            position()
+            pinPage(web, toPanelHeight: expandedPanelHeight)
         }
         panel.makeKeyAndOrderFront(nil)
+        root.layoutSubtreeIfNeeded()
+        updateInsets()
         panel.makeFirstResponder(address)
         address.selectText(nil)
         if let query {
             address.stringValue = query
             // A selected string is always a query, even when it looks like a URL.
             load(engine.searchURL(for: query))
+            if let webView { panel.makeFirstResponder(webView) }
         } else if let notice { showMessage(notice) }
     }
 
@@ -256,9 +461,9 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
         webView?.removeFromSuperview()
         navigationObservers.removeAll()
         webView = nil
-        setWaiting(true)
-        updateNavigation()
         showMessage()
+        setWaiting(true, animated: false)
+        updateNavigation()
         address.stringValue = ""
         if let app = previousApp, !app.isTerminated { app.activate(options: []) }
         previousApp = nil
@@ -275,20 +480,25 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
         guard let screen else { return }
         let visible = screen.visibleFrame
         let width = min(panel.frame.width, visible.width - 24)
-        let height = min(panel.frame.height, visible.height - 24)
+        let height = min(expandedHeight, visible.height - 24)
+        let collapsed = collapsedHeight()
         // Use the right edge of the current screen to leave its center unobstructed.
-        panel.setFrame(NSRect(x: visible.maxX - width - 12, y: visible.midY - height / 2,
-                              width: width, height: height), display: true)
+        // The bar sits where the expanded page's top edge will be.
+        panel.setFrame(NSRect(x: visible.maxX - width - 12, y: visible.midY + height / 2 - collapsed,
+                              width: width, height: collapsed), display: true)
+        resizePanel(height: collapsed, animated: false)
     }
 
     @objc private func submit() {
         guard let url = engine.destination(for: address.stringValue) else { return }
         load(url)
+        // Hand keys to the page, as Safari does; ending the edit shows the short address.
+        if let webView { panel.makeFirstResponder(webView) }
     }
 
     private func load(_ url: URL) {
         setWaiting(false)
-        showMessage("Loading…")
+        showMessage()
         webView?.load(URLRequest(url: url))
     }
 
@@ -302,11 +512,11 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         setWaiting(false)
-        showMessage("Loading…")
+        showMessage()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        address.stringValue = webView.url?.absoluteString ?? address.stringValue
+        if address.currentEditor() == nil { showAddress(editing: false) }
         showMessage()
     }
 
