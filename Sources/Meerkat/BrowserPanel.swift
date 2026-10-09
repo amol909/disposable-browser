@@ -59,7 +59,7 @@ final class BrowserPanel: NSObject, WKNavigationDelegate, NSSearchFieldDelegate,
                           backing: .buffered, defer: false)
         banner = Self.makeBanner(around: message)
         super.init()
-        panel.title = "Disposable Browser"
+        panel.title = "Meerkat"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.toolbarStyle = .unifiedCompact

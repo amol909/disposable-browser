@@ -31,7 +31,7 @@ struct SettingsView: View {
             } else {
                 controls.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
-            Text("Allow Disposable Browser in System Settings → Privacy & Security → Accessibility. If the status shows not allowed while the switch there is on, remove and re-add the app. Some apps do not expose selected text; without a selection, opening falls back to manual search.")
+            Text("Allow Meerkat in System Settings → Privacy & Security → Accessibility. If the status shows not allowed while the switch there is on, remove and re-add the app. Some apps do not expose selected text; without a selection, opening falls back to manual search.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Closing discards the page, not cookies or logins. This is not private browsing.")
@@ -91,9 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         let mainMenu = NSMenu()
-        let appItem = NSMenuItem(title: "Disposable Browser", action: nil, keyEquivalent: "")
-        let appMenu = NSMenu(title: "Disposable Browser")
-        let quitItem = appMenu.addItem(withTitle: "Quit Disposable Browser", action: #selector(quit), keyEquivalent: "q")
+        let appItem = NSMenuItem(title: "Meerkat", action: nil, keyEquivalent: "")
+        let appMenu = NSMenu(title: "Meerkat")
+        let quitItem = appMenu.addItem(withTitle: "Quit Meerkat", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
@@ -111,12 +111,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         browser = BrowserPanel()
         ClipboardSelection.startWatching()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "globe", accessibilityDescription: "Disposable Browser")
+        statusItem.button?.image = MeerkatGlyph.menuBarImage()
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Browser", action: #selector(openBrowser), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Disposable Browser", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit Meerkat", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }
         statusItem.menu = menu
         // Key down opens without waiting for the person to release the keys.
@@ -139,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .needsAccess: browser.show(notice: Self.accessNotice)
         case .openWithSelection:
             guard let app = sourceApp() else {
-                Selection.log.notice("read skipped: Disposable Browser is the frontmost app")
+                Selection.log.notice("read skipped: Meerkat is the frontmost app")
                 browser.show()
                 return
             }
@@ -173,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 300),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            window.title = "Disposable Browser Settings"
+            window.title = "Meerkat Settings"
             window.isReleasedWhenClosed = false
             window.contentView = NSHostingView(rootView: SettingsView())
             window.center()
@@ -187,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-enum DisposableBrowser {
+enum MeerkatApp {
     @MainActor static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()

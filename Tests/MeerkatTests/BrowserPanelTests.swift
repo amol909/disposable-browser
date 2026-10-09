@@ -2,7 +2,7 @@ import AppKit
 import WebKit
 import XCTest
 import os
-@testable import DisposableBrowser
+@testable import Meerkat
 
 final class BrowserPanelTests: XCTestCase {
     @MainActor

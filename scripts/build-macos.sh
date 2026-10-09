@@ -11,18 +11,24 @@ swift test
 ARCHS=(--arch arm64 --arch x86_64)
 swift build -c release "${ARCHS[@]}"
 BIN="$(swift build -c release "${ARCHS[@]}" --show-bin-path)"
-APP="$ROOT/dist/Disposable Browser.app"
+APP="$ROOT/dist/Meerkat.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN/DisposableBrowser" "$APP/Contents/MacOS/DisposableBrowser"
+cp "$BIN/Meerkat" "$APP/Contents/MacOS/Meerkat"
 # SwiftPM records the deployment target as the linked SDK. Record the real SDK so
 # macOS 26+ renders Liquid Glass instead of the compatibility appearance.
 xcrun vtool -set-build-version macos 14.0 "$(xcrun --show-sdk-version)" -replace \
-    -output "$APP/Contents/MacOS/DisposableBrowser" "$APP/Contents/MacOS/DisposableBrowser"
+    -output "$APP/Contents/MacOS/Meerkat" "$APP/Contents/MacOS/Meerkat"
 # SwiftPM resource bundles (including KeyboardShortcuts localizations).
 for bundle in "$BIN"/*.bundle; do
     [[ ! -d "$bundle" ]] || cp -R "$bundle" "$APP/Contents/Resources/"
 done
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+# The app icon is drawn from the same code as the menu bar icon.
+ICON_BUILD="$ROOT/.build/app-icon"
+rm -rf "$ICON_BUILD" && mkdir -p "$ICON_BUILD"
+swiftc -O "$ROOT/scripts/AppIcon/main.swift" "$ROOT/Sources/Meerkat/MeerkatGlyph.swift" -o "$ICON_BUILD/AppIcon"
+"$ICON_BUILD/AppIcon" "$ICON_BUILD/AppIcon.iconset"
+iconutil -c icns "$ICON_BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 # Ad hoc signatures change with every build, so macOS drops Accessibility access after
 # each rebuild. A certificate identity keeps the signing requirement stable. Set
 # CODESIGN_IDENTITY, or put the identity in the git-ignored .codesign-identity file.

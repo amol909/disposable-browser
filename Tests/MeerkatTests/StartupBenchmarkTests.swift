@@ -1,11 +1,11 @@
 import AppKit
 import WebKit
 import XCTest
-@testable import DisposableBrowser
+@testable import Meerkat
 
 /// Measures how fast the panel opens and shows a first page.
-/// Runs only with `DISPOSABLE_BROWSER_BENCHMARK=1`, in its own process for cold numbers:
-/// `DISPOSABLE_BROWSER_BENCHMARK=1 swift test -c release --filter StartupBenchmarkTests`
+/// Runs only with `MEERKAT_BENCHMARK=1`, in its own process for cold numbers:
+/// `MEERKAT_BENCHMARK=1 swift test -c release --filter StartupBenchmarkTests`
 final class StartupBenchmarkTests: XCTestCase {
     private func milliseconds(since start: UInt64) -> Double {
         Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
@@ -47,7 +47,7 @@ final class StartupBenchmarkTests: XCTestCase {
 
     @MainActor
     func testStartup() async throws {
-        try XCTSkipUnless(ProcessInfo.processInfo.environment["DISPOSABLE_BROWSER_BENCHMARK"] == "1")
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["MEERKAT_BENCHMARK"] == "1")
         _ = NSApplication.shared
         let start = DispatchTime.now().uptimeNanoseconds
         let browser = BrowserPanel()

@@ -7,13 +7,13 @@ import os
 /// Reads can wait on a slow source app, so they run on `queue`, never on the main thread.
 enum Selection {
     /// Serial queue for all reads; it also guards the mutable state below.
-    static let queue = DispatchQueue(label: "com.amol909.disposable-browser.selection", qos: .userInteractive)
+    static let queue = DispatchQueue(label: "com.amol909.meerkat.selection", qos: .userInteractive)
     /// Longest wait for one Accessibility request, so a hung source app cannot freeze the panel.
     private static let timeout: Float = 0.5
     /// Apps already asked to build their accessibility tree in this session.
     nonisolated(unsafe) private static var enabledApps: Set<pid_t> = []
     /// Records how each read went, never the selected text itself.
-    static let log = Logger(subsystem: "com.amol909.disposable-browser", category: "selection")
+    static let log = Logger(subsystem: "com.amol909.meerkat", category: "selection")
 
     /// Outcome of one Accessibility read.
     private enum Reading {

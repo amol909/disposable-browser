@@ -1,7 +1,7 @@
 import AppKit
 import WebKit
 import XCTest
-@testable import DisposableBrowser
+@testable import Meerkat
 
 final class BrowserViewModeTests: XCTestCase {
     @MainActor

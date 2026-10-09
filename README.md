@@ -1,24 +1,30 @@
-# Disposable Browser
+# Meerkat
 
-A macOS-first, keyboard-invoked peek browser. Native Swift/AppKit panel with
-WKWebView; no bundled Chromium or shared cross-language core.
+A quick look at the web, then back to work. Meerkat is a macOS-first,
+keyboard-invoked peek browser that discards each page when you close it. It is a
+native Swift/AppKit panel with WKWebView; no bundled Chromium or shared
+cross-language core.
 
 ## Install (macOS 14+)
 
-1. Download `DisposableBrowser-<version>.zip` from the
-   [latest release](https://github.com/amol909/disposable-browser/releases/latest).
-2. Unzip it and move **Disposable Browser.app** to `/Applications`.
+1. Download `Meerkat-<version>.zip` from the
+   [latest release](https://github.com/amol909/meerkat/releases/latest).
+2. Unzip it and move **Meerkat.app** to `/Applications`.
 3. Open the app. The app is not notarized by Apple, so macOS blocks the first launch
    and says it cannot verify the developer.
 4. Open **System Settings → Privacy & Security**. Below the message about
-   Disposable Browser, click **Open Anyway**, then confirm. You do this only once.
-5. Find the globe icon in the menu bar. In Settings, set a shortcut and, to search
+   Meerkat, click **Open Anyway**, then confirm. You do this only once.
+5. Find the meerkat icon in the menu bar. In Settings, set a shortcut and, to search
    selected text, allow Accessibility access.
 
 The app is signed ad hoc. Each new version has a new signature, so macOS removes
 its Accessibility access after an update. If the Settings status shows
-**not allowed**, remove Disposable Browser from **Privacy & Security → Accessibility**,
+**not allowed**, remove Meerkat from **Privacy & Security → Accessibility**,
 then allow it again.
+
+Meerkat was called Disposable Browser before version 0.2.0. Meerkat is a new app
+for macOS, so set your shortcuts and allow Accessibility access again. Website logins
+do not carry over. You can delete Disposable Browser.app.
 
 Alternatively, build the app from source as described below.
 
@@ -29,7 +35,7 @@ KeyboardShortcuts 3.1.0). Confirm with `swift --version`, then:
 
 ```sh
 bash scripts/build-macos.sh
-open "dist/Disposable Browser.app"
+open "dist/Meerkat.app"
 ```
 
 The first build downloads KeyboardShortcuts 3.1.0. The script runs tests, builds
@@ -57,7 +63,7 @@ script signs ad hoc and prints a warning.
   14–25 use native materials. Website content stays opaque. The build script records
   the real SDK version in the binary, because SwiftPM records the deployment target;
   without that step, macOS shows the pre-Liquid Glass compatibility appearance.
-- The globe in the menu bar opens the browser, Settings, or quits the app.
+- The meerkat in the menu bar opens the browser, Settings, or quits the app.
 - Choose Google or DuckDuckGo in Settings.
 - **Website view** defaults to **Mobile**, requesting a mobile Safari layout for
   the narrow panel. **Desktop** uses WebKit's native user agent. The choice is
@@ -120,7 +126,7 @@ be read** in Settings (off by default). When an app cannot report a selection:
 
 - If that app changed the clipboard in the last 15 seconds while it was in front (for
   example a copy-on-select terminal), its clipboard text is searched at once. To know
-  this, Disposable Browser checks the clipboard change count four times a second and
+  this, Meerkat checks the clipboard change count four times a second and
   notes the frontmost app; it does not read clipboard contents until you search.
 - Otherwise it presses the app's Copy menu item (or sends ⌘C), reads the copied text,
   and restores every previous clipboard item. Clipboard managers may record the copy.
@@ -129,7 +135,7 @@ be read** in Settings (off by default). When an app cannot report a selection:
 
 Apps that report an empty selection never receive Copy. A copy made in the source app
 within 15 seconds is searched even if you meant a newer, uncopied selection. Selection reads log their outcome (never the text) under the subsystem
-`com.amol909.disposable-browser`.
+`com.amol909.meerkat`.
 
 ## Startup
 
@@ -140,7 +146,7 @@ each dismissal. This costs the memory of one idle web process while the panel is
 Measure opening and first-load times (results print as `BENCHMARK` lines):
 
 ```sh
-DISPOSABLE_BROWSER_BENCHMARK=1 swift test --filter StartupBenchmarkTests
+MEERKAT_BENCHMARK=1 swift test --filter StartupBenchmarkTests
 ```
 
 ## Session and privacy

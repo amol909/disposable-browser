@@ -9,17 +9,17 @@ var targets: [Target] = [
 ]
 
 #if os(macOS)
-products.append(.executable(name: "DisposableBrowser", targets: ["DisposableBrowser"]))
+products.append(.executable(name: "Meerkat", targets: ["Meerkat"]))
 dependencies.append(.package(url: "https://github.com/sindresorhus/KeyboardShortcuts", exact: "3.1.0"))
-targets.append(.executableTarget(name: "DisposableBrowser", dependencies: [
+targets.append(.executableTarget(name: "Meerkat", dependencies: [
     "BrowserCore",
     .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts")
 ]))
-targets.append(.testTarget(name: "DisposableBrowserTests", dependencies: ["DisposableBrowser"]))
+targets.append(.testTarget(name: "MeerkatTests", dependencies: ["Meerkat"]))
 #endif
 
 let package = Package(
-    name: "DisposableBrowser",
+    name: "Meerkat",
     platforms: [.macOS(.v14)],
     products: products,
     dependencies: dependencies,
