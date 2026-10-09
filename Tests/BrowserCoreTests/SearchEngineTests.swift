@@ -25,7 +25,10 @@ final class SearchEngineTests: XCTestCase {
         XCTAssertNil(SearchEngine.google.destination(for: " \n "))
         XCTAssertEqual(SearchEngine.google.destination(for: " example.com/docs?q=one ")?.absoluteString, "https://example.com/docs?q=one")
         XCTAssertEqual(SearchEngine.google.destination(for: "http://localhost:8000/a")?.absoluteString, "http://localhost:8000/a")
-        for query in ["what is example.com", "javascript:alert(1)", "file:///tmp/test", "https://", "hello"] {
+        XCTAssertEqual(SearchEngine.google.destination(for: "192.168.1.1")?.absoluteString, "https://192.168.1.1")
+        XCTAssertEqual(SearchEngine.google.destination(for: "xn--bcher-kva.example")?.absoluteString, "https://xn--bcher-kva.example")
+        for query in ["what is example.com", "javascript:alert(1)", "file:///tmp/test", "https://", "hello",
+                      "3.14", "v1.2", "1.2.3", "user@example.com"] {
             XCTAssertEqual(SearchEngine.google.destination(for: query), SearchEngine.google.searchURL(for: query))
         }
     }

@@ -1,44 +1,55 @@
 import AppKit
 import CoreGraphics
+import os
 
 /// Opt-in fallback for apps that draw their own text and expose no selection to
 /// Accessibility (for example GPUI terminals). It uses a fresh copy the app already made
 /// (copy-on-select terminals), or else sends Copy, reads it, and restores the clipboard.
-@MainActor
+/// The watcher runs on the main thread; `copy` runs on `Selection.queue`.
 enum ClipboardSelection {
+    /// Gives keyboard focus to the source app (true) or back to the panel (false). A typed
+    /// ⌘C goes to the window with keyboard focus, so the panel must not have it then.
+    /// Returns false when the panel was dismissed and the read is no longer wanted.
+    typealias FocusHandoff = @Sendable (_ toSource: Bool) -> Bool
+
     /// UserDefaults key for the Settings switch; off by default.
     static let settingKey = "copySelectionFallback"
     /// Longest wait for the source app to update the clipboard.
     private static let wait: TimeInterval = 0.3
+    /// Time for a typed ⌘C to reach the source app while the panel is hidden.
+    private static let keyDelivery: TimeInterval = 0.05
     /// How old a copy made in the source app can be and still count as its selection.
     private static let recentCopy: TimeInterval = 15
     /// The latest clipboard change seen: its count, the frontmost app then, and when.
-    /// Only the change count is read, never the contents.
-    private static var lastChange: (count: Int, pid: pid_t?, date: Date)?
-    private static var watcher: Timer?
+    /// Only the change count is read, never the contents. Shared by the watcher and `copy`.
+    private static let lastChange = OSAllocatedUnfairLock<(count: Int, pid: pid_t?, date: Date)?>(initialState: nil)
+    @MainActor private static var watcher: Timer?
 
     /// Starts noting which app made each clipboard change, so a copy-on-select copy can be
     /// used at once. Polls the change count four times a second.
+    @MainActor
     static func startWatching() {
         guard watcher == nil else { return }
         noteChange()
         watcher = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
-            MainActor.assumeIsolated { noteChange() }
+            noteChange()
         }
     }
 
     private static func noteChange() {
         let count = NSPasteboard.general.changeCount
-        guard count != lastChange?.count else { return }
-        lastChange = (count, NSWorkspace.shared.frontmostApplication?.processIdentifier, Date())
+        guard count != lastChange.withLock({ $0?.count }) else { return }
+        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        lastChange.withLock { $0 = (count, pid, Date()) }
     }
 
     /// Returns the source app's selection from the clipboard, or nil if it copied nothing.
-    static func copy(from application: NSRunningApplication, source: String) -> String? {
+    static func copy(from application: NSRunningApplication, source: String,
+                     handoff: FocusHandoff) -> String? {
         let pasteboard = NSPasteboard.general
         // Catch a change made since the last poll; the source app is still frontmost.
         noteChange()
-        if let change = lastChange, change.pid == application.processIdentifier,
+        if let change = lastChange.withLock({ $0 }), change.pid == application.processIdentifier,
            Date().timeIntervalSince(change.date) < recentCopy,
            let text = pasteboard.string(forType: .string), !text.isEmpty {
             Selection.log.notice("copy \(source, privacy: .public): recent copy from this app, \(text.count) chars")
@@ -48,18 +59,27 @@ enum ClipboardSelection {
         let before = pasteboard.changeCount
         let released = waitForModifierRelease()
         // Pressing the app's own Copy menu item works where synthetic keys are ignored.
+        // The menu item works without keyboard focus; a typed ⌘C needs it.
         let method: String
         if pressCopyMenuItem(of: application.processIdentifier) {
             method = "menu"
-        } else if sendCopy() {
-            method = "⌘C key"
+            waitForChange(of: pasteboard, from: before)
         } else {
-            Selection.log.notice("copy \(source, privacy: .public): could not send ⌘C")
-            return nil
-        }
-        let deadline = Date().addingTimeInterval(wait)
-        while pasteboard.changeCount == before && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.02)
+            guard handoff(true) else {
+                Selection.log.notice("copy \(source, privacy: .public): skipped, panel dismissed")
+                return nil
+            }
+            let sent = sendCopy()
+            // The key goes to the window with focus when it is delivered, so the panel
+            // can take focus back before the app finishes copying.
+            Thread.sleep(forTimeInterval: keyDelivery)
+            _ = handoff(false)
+            guard sent else {
+                Selection.log.notice("copy \(source, privacy: .public): could not send ⌘C")
+                return nil
+            }
+            method = "⌘C key"
+            waitForChange(of: pasteboard, from: before)
         }
         guard pasteboard.changeCount != before else {
             // Nothing selected, or the app has no Copy command: the clipboard is untouched.
@@ -69,9 +89,18 @@ enum ClipboardSelection {
         let text = pasteboard.string(forType: .string)
         restore(saved, to: pasteboard)
         // The restore is not a new copy by the source app.
-        lastChange = (pasteboard.changeCount, nil, Date())
+        let restored = pasteboard.changeCount
+        lastChange.withLock { $0 = (restored, nil, Date()) }
         Selection.log.notice("copy \(source, privacy: .public): \(text?.count ?? 0) chars (\(method, privacy: .public))")
         return text
+    }
+
+    /// Waits until the clipboard changes, or until the source app had time to copy.
+    private static func waitForChange(of pasteboard: NSPasteboard, from count: Int) {
+        let deadline = Date().addingTimeInterval(wait)
+        while pasteboard.changeCount == count && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
     }
 
     /// Finds the enabled menu item whose shortcut is plain ⌘C (Edit > Copy in any language)
@@ -107,7 +136,7 @@ enum ClipboardSelection {
         return nodes
     }
 
-    /// Types ⌘C into the frontmost app (still the source app, before the panel shows).
+    /// Types ⌘C into the source app; the caller first hands it keyboard focus.
     /// Some apps, such as GPUI apps, ignore keys posted straight to their process, so this
     /// uses the system keyboard path, as a real key press does.
     private static func sendCopy() -> Bool {

@@ -47,9 +47,11 @@ script signs ad hoc and prints a warning.
 - The panel opens at the right edge of the screen containing the pointer. It
   can be moved and resized. This initial version does not inspect the source
   window's geometry or guarantee placement beside it.
-- Enter searches or HTTP(S) addresses. Bare domains open over HTTPS.
+- Enter searches or HTTP(S) addresses. Bare domains and IPv4 addresses open over
+  HTTPS. Numbers (`3.14`), versions (`v1.2`), and email addresses are searched.
 - **Escape**, **⌘W**, the close button, or the toggle shortcut dismiss the
-  panel, discard its page/navigation stack, and attempt to restore the source app.
+  panel, discard its page/navigation stack, and attempt to restore the source app. If
+  you switched to another app while the panel was open, that app stays in front.
 - The compact native toolbar has **Back**, one search/address field, and **Open in
   Browser**, in Safari's order. While browsing, the field shows only the host (for
   example `google.com`); focusing it shows the full URL. Drag the toolbar background
@@ -71,8 +73,10 @@ script signs ad hoc and prints a warning.
   accessibility names. A thin accent line under the toolbar shows load progress.
   Errors and selection notices appear in a small floating banner only as needed;
   there is no permanent title/help/cookies row in the panel.
-- Selected-text search reads Accessibility selection before showing the panel;
-  selected text is always searched, not interpreted as an address. Line breaks and
+- Shortcuts act when pressed, not when released. Selected-text search shows the focused
+  bar at once and reads the Accessibility selection in the background, then searches it.
+  Escape closes the panel during the read too. If you type before the read ends, your
+  text is kept. Selected text is always searched, not interpreted as an address. Line breaks and
   repeated spaces become single spaces, and selections longer than 500 characters
   are cut at a word boundary.
 - Native text views give their selection directly. For page selections in Safari,
@@ -84,7 +88,8 @@ script signs ad hoc and prints a warning.
   app cannot freeze the panel.
 
 Enable selection access using the button in Settings and macOS **Privacy & Security
-→ Accessibility**. Settings shows whether access is allowed and updates every second.
+→ Accessibility**. Settings shows whether access is allowed. It updates when macOS reports an
+Accessibility change and when you return to the app; it does not poll.
 With ad hoc signing, macOS drops access after a rebuild; if the status shows not
 allowed, remove and re-add the app in that list, or sign with a certificate (see above). Unsupported apps or empty selections fall back to manual input
 with an explanatory message. By default there is no clipboard mutation, simulated
@@ -100,10 +105,24 @@ be read** in Settings (off by default). When an app cannot report a selection:
   notes the frontmost app; it does not read clipboard contents until you search.
 - Otherwise it presses the app's Copy menu item (or sends ⌘C), reads the copied text,
   and restores every previous clipboard item. Clipboard managers may record the copy.
+  A typed ⌘C needs the source app to have keyboard focus, so the panel hides for about
+  50 ms while it is sent. Apps with a Copy menu item do not need this.
 
 Apps that report an empty selection never receive Copy. A copy made in the source app
 within 15 seconds is searched even if you meant a newer, uncopied selection. Selection reads log their outcome (never the text) under the subsystem
 `com.amol909.disposable-browser`.
+
+## Startup
+
+The app keeps one hidden webview ready, with its web content process already started, so
+opening and the first page load do not wait for WebKit. It prepares the next one after
+each dismissal. This costs the memory of one idle web process while the panel is hidden.
+
+Measure opening and first-load times (results print as `BENCHMARK` lines):
+
+```sh
+DISPOSABLE_BROWSER_BENCHMARK=1 swift test --filter StartupBenchmarkTests
+```
 
 ## Session and privacy
 
@@ -133,6 +152,8 @@ are required before considering the interaction verified:
 4. Check Spaces, fullscreen apps, multiple displays, dragging, and resizing.
 5. Check redirects, back navigation, target-blank links, network failures, and
    opening in the default browser. Downloads and new popup windows are not supported.
+   Clicked `mailto:`, `tel:`, `sms:`, and FaceTime links open their system app; other
+   custom schemes are blocked.
 6. Confirm sign-ins persist after dismissal and restarting the app.
 7. Switch Website view with a page open: check it reloads at the same URL with
    cookies retained. Reopen and restart to check the saved choice. Compare a Google
@@ -141,3 +162,7 @@ are required before considering the interaction verified:
 
 Windows and Linux desktop implementations are not included yet. Future ports
 should share the behavior contract and fixtures rather than a Rust FFI core.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

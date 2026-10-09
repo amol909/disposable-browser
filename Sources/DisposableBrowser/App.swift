@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Combine
 import SwiftUI
 import KeyboardShortcuts
 import BrowserCore
@@ -14,9 +15,14 @@ struct SettingsView: View {
     @AppStorage("searchSelectionOnOpen") private var searchSelectionOnOpen = false
     @AppStorage("browserViewMode") private var viewMode = "Mobile"
     @AppStorage(ClipboardSelection.settingKey) private var copyFallback = false
-    /// macOS sends no notification for Accessibility changes, so Settings checks every second.
     @State private var hasAccess = AXIsProcessTrusted()
-    private let accessCheck = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    /// macOS posts this when the Accessibility list changes. The trust value updates a moment
+    /// later, so the check waits briefly.
+    private let accessChanged = DistributedNotificationCenter.default()
+        .publisher(for: Notification.Name("com.apple.accessibility.api"))
+        .delay(for: .milliseconds(250), scheduler: RunLoop.main)
+    /// Also checks when the person comes back from System Settings, in case the change was missed.
+    private let appActivated = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -67,7 +73,9 @@ struct SettingsView: View {
                     Button("Enable…") { Selection.requestPermission() }
                 }
             }
-            .onReceive(accessCheck) { _ in hasAccess = AXIsProcessTrusted() }
+            .onAppear { hasAccess = AXIsProcessTrusted() }
+            .onReceive(accessChanged) { _ in hasAccess = AXIsProcessTrusted() }
+            .onReceive(appActivated) { _ in hasAccess = AXIsProcessTrusted() }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -111,8 +119,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Quit Disposable Browser", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }
         statusItem.menu = menu
-        KeyboardShortcuts.onKeyUp(for: .toggleBrowser) { [weak self] in self?.toggleBrowser() }
-        KeyboardShortcuts.onKeyUp(for: .searchSelection) { [weak self] in self?.searchSelection() }
+        // Key down opens without waiting for the person to release the keys.
+        KeyboardShortcuts.onKeyDown(for: .toggleBrowser) { [weak self] in self?.toggleBrowser() }
+        KeyboardShortcuts.onKeyDown(for: .searchSelection) { [weak self] in self?.searchSelection() }
         if KeyboardShortcuts.getShortcut(for: .toggleBrowser) == nil { openSettings() }
     }
 
@@ -123,25 +132,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isVisible: browser.panel.isVisible,
             searchSelection: UserDefaults.standard.bool(forKey: "searchSelectionOnOpen"),
             hasAccess: AXIsProcessTrusted()
-        ) {
-            guard let app = NSWorkspace.shared.frontmostApplication,
-                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
-                Selection.log.notice("read skipped: Disposable Browser is the frontmost app")
-                return nil
-            }
-            return Selection.read(from: app)
-        }
+        )
         switch action {
         case .dismiss: browser.dismiss()
-        case .open(let query): browser.show(query: query)
+        case .open: browser.show()
         case .needsAccess: browser.show(notice: Self.accessNotice)
+        case .openWithSelection:
+            guard let app = sourceApp() else {
+                Selection.log.notice("read skipped: Disposable Browser is the frontmost app")
+                browser.show()
+                return
+            }
+            browser.show(readingSelection: { Selection.read(from: app, handoff: $0) })
         }
     }
 
     private func searchSelection() {
-        // Read from the source app before the panel takes keyboard focus.
-        guard let app = NSWorkspace.shared.frontmostApplication,
-              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+        guard let app = sourceApp() else {
             browser.show(notice: "Select text in another app, then use the selection shortcut.")
             return
         }
@@ -149,11 +156,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             browser.show(notice: Self.accessNotice)
             return
         }
-        guard let text = Selection.read(from: app) else {
-            browser.show(notice: "No readable selection. Type your search instead.")
-            return
-        }
-        browser.show(query: text)
+        browser.show(readingSelection: { Selection.read(from: app, handoff: $0) },
+                     otherwise: "No readable selection. Type your search instead.")
+    }
+
+    /// The frontmost app, unless it is this app (the panel does not activate it).
+    private func sourceApp() -> NSRunningApplication? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+        return app
     }
 
     @objc private func openBrowser() { browser.show() }

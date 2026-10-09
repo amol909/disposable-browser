@@ -4,12 +4,14 @@ import BrowserCore
 import os
 
 /// Reads the selected text of another app through the Accessibility API.
-@MainActor
+/// Reads can wait on a slow source app, so they run on `queue`, never on the main thread.
 enum Selection {
+    /// Serial queue for all reads; it also guards the mutable state below.
+    static let queue = DispatchQueue(label: "com.amol909.disposable-browser.selection", qos: .userInteractive)
     /// Longest wait for one Accessibility request, so a hung source app cannot freeze the panel.
     private static let timeout: Float = 0.5
     /// Apps already asked to build their accessibility tree in this session.
-    private static var enabledApps: Set<pid_t> = []
+    nonisolated(unsafe) private static var enabledApps: Set<pid_t> = []
     /// Records how each read went, never the selected text itself.
     static let log = Logger(subsystem: "com.amol909.disposable-browser", category: "selection")
 
@@ -23,7 +25,10 @@ enum Selection {
     }
 
     /// Returns the source app's selection as a one-line search query, or nil if unreadable.
-    static func read(from application: NSRunningApplication) -> String? {
+    /// Call only on `queue`. `handoff` gives the source app keyboard focus for a typed Copy.
+    static func read(from application: NSRunningApplication,
+                     handoff: ClipboardSelection.FocusHandoff) -> String? {
+        dispatchPrecondition(condition: .onQueue(queue))
         let source = application.bundleIdentifier ?? "pid \(application.processIdentifier)"
         guard AXIsProcessTrusted() else {
             log.notice("read \(source, privacy: .public): no Accessibility access")
@@ -48,7 +53,7 @@ enum Selection {
         case .unreadable:
             // Only when the app cannot report a selection, so an empty selection never sends ⌘C.
             guard UserDefaults.standard.bool(forKey: ClipboardSelection.settingKey) else { return nil }
-            return ClipboardSelection.copy(from: application, source: source).flatMap(BrowserShortcut.query(fromSelection:))
+            return ClipboardSelection.copy(from: application, source: source, handoff: handoff).flatMap(BrowserShortcut.query(fromSelection:))
         }
     }
 
@@ -133,8 +138,8 @@ enum Selection {
     }
 
     /// Results of the most recent reads, for the diagnostic log.
-    private static var lastError: AXError = .success
-    private static var markerError: AXError = .success
+    nonisolated(unsafe) private static var lastError: AXError = .success
+    nonisolated(unsafe) private static var markerError: AXError = .success
 
     private static func copy(_ node: AXUIElement, _ attribute: String) -> CFTypeRef? {
         var value: CFTypeRef?

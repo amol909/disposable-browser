@@ -26,10 +26,23 @@ public enum SearchEngine: String, CaseIterable {
         }
         // Bare domains are convenient; other input (including custom schemes) is a search.
         if !text.contains(where: { $0.isWhitespace }), !text.contains("://"),
-           let url = URL(string: "https://" + text),
-           let host = url.host, host.contains("."), !host.hasPrefix("."), !host.hasSuffix(".") {
+           let url = URL(string: "https://" + text), url.user == nil,
+           let host = url.host, Self.isBareHost(host) {
             return url
         }
         return searchURL(for: text)
     }
+
+    /// True for a dotted name with a letter top-level label (or punycode), or an IPv4 address.
+    /// Numbers ("3.14"), versions ("v1.2"), and emails stay searches.
+    private static func isBareHost(_ host: String) -> Bool {
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count > 1, !labels.contains(where: \.isEmpty), let last = labels.last else { return false }
+        if labels.count == 4, labels.allSatisfy({ $0.count <= 3 && $0.allSatisfy(\.isASCIIDigit) }) { return true }
+        return last.hasPrefix("xn--") || (last.count > 1 && last.allSatisfy(\.isLetter))
+    }
+}
+
+private extension Character {
+    var isASCIIDigit: Bool { isASCII && isNumber }
 }

@@ -1,6 +1,7 @@
 import AppKit
 import WebKit
 import XCTest
+import os
 @testable import DisposableBrowser
 
 final class BrowserPanelTests: XCTestCase {
@@ -184,6 +185,113 @@ final class BrowserPanelTests: XCTestCase {
         let search = searchField(browser)
         XCTAssertTrue((panel.firstResponder as? NSTextView)?.delegate === search)
         if #available(macOS 26.0, *) { XCTAssertTrue(edge.isHidden, "The bar needs no page edge") }
+    }
+
+    @MainActor
+    func testSelectionReadShowsFocusedBarBeforeTheReadEnds() async throws {
+        _ = NSApplication.shared
+        let browser = BrowserPanel()
+        defer { browser.dismiss() }
+        browser.show(readingSelection: { _ in
+            Thread.sleep(forTimeInterval: 0.2)
+            return "selected words"
+        })
+        XCTAssertTrue(browser.panel.isVisible, "The bar must not wait for the selection read")
+        XCTAssertTrue(browser.panel.isKeyWindow, "Escape must reach the panel during the read")
+        let web = descendants(browser.panel.contentView!).compactMap { $0 as? WKWebView }.first!
+        for _ in 0..<100 where web.isHidden {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(web.isHidden, "A selection search expands to the page")
+        XCTAssertTrue(browser.panel.isKeyWindow)
+        let query = URLComponents(url: try XCTUnwrap(web.url), resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "q" }?.value
+        XCTAssertEqual(query, "selected words")
+    }
+
+    @MainActor
+    func testTypedCopyHidesPanelUntilItEnds() async throws {
+        _ = NSApplication.shared
+        let browser = BrowserPanel()
+        defer { browser.dismiss() }
+        let panel = browser.panel
+        let states = OSAllocatedUnfairLock<[Bool]>(initialState: [])
+        browser.show(readingSelection: { handoff in
+            let wanted = handoff(true)
+            let hidden = DispatchQueue.main.sync { MainActor.assumeIsolated { !panel.isVisible } }
+            _ = handoff(false)
+            let focused = DispatchQueue.main.sync { MainActor.assumeIsolated { panel.isKeyWindow } }
+            states.withLock { $0 = [wanted, hidden, focused] }
+            return nil
+        })
+        for _ in 0..<100 where states.withLock({ $0.isEmpty }) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(states.withLock { $0 }, [true, true, true], "Hidden during the Copy, focused after it")
+        XCTAssertTrue((panel.firstResponder as? NSTextView)?.delegate === searchField(browser))
+    }
+
+    @MainActor
+    func testTextTypedDuringReadWinsOverSelection() async throws {
+        _ = NSApplication.shared
+        let browser = BrowserPanel()
+        defer { browser.dismiss() }
+        let search = searchField(browser)
+        browser.show(readingSelection: { _ in
+            Thread.sleep(forTimeInterval: 0.1)
+            return "selected words"
+        })
+        search.stringValue = "typed"
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(search.stringValue, "typed")
+        let web = descendants(browser.panel.contentView!).compactMap { $0 as? WKWebView }.first!
+        XCTAssertNil(web.url)
+    }
+
+    @MainActor
+    func testSelectionShortcutSearchesWhilePageIsOpen() async throws {
+        _ = NSApplication.shared
+        let browser = BrowserPanel()
+        defer { browser.dismiss() }
+        browser.show(query: "first")
+        browser.show(readingSelection: { _ in "second" })
+        let web = descendants(browser.panel.contentView!).compactMap { $0 as? WKWebView }.first!
+        func query() -> String? {
+            web.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
+                .queryItems?.first { $0.name == "q" }?.value
+        }
+        for _ in 0..<100 where query() != "second" {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(query(), "second", "An open panel searches a new selection")
+    }
+
+    @MainActor
+    func testUnreadableSelectionShowsNoticeAndDismissalDiscardsRead() async throws {
+        _ = NSApplication.shared
+        let browser = BrowserPanel()
+        defer { browser.dismiss() }
+        let notice = "No readable selection. Type your search instead."
+        browser.show(readingSelection: { _ in nil }, otherwise: notice)
+        let message = noticeLabel(browser)
+        for _ in 0..<100 where message.stringValue.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(message.stringValue, notice)
+        XCTAssertTrue((browser.panel.firstResponder as? NSTextView)?.delegate === searchField(browser))
+
+        browser.dismiss()
+        let stillWanted = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+        browser.show(readingSelection: { handoff in
+            Thread.sleep(forTimeInterval: 0.1)
+            stillWanted.withLock { $0 = handoff(true) }
+            return "late words"
+        })
+        browser.dismiss()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(browser.panel.isVisible, "A read that ends after dismissal must not reopen")
+        XCTAssertTrue(searchField(browser).stringValue.isEmpty)
+        XCTAssertEqual(stillWanted.withLock { $0 }, false, "No Copy may be typed after dismissal")
     }
 
     @MainActor

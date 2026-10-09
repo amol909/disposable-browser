@@ -2,47 +2,37 @@ import XCTest
 @testable import BrowserCore
 
 final class BrowserShortcutTests: XCTestCase {
-    func testVisiblePanelDismissesWithoutReadingSelection() {
+    func testVisiblePanelDismisses() {
         for enabled in [false, true] {
-            XCTAssertEqual(BrowserShortcut.action(isVisible: true, searchSelection: enabled, hasAccess: true) {
-                XCTFail("Dismissal must not inspect the source app")
-                return "selected text"
-            }, .dismiss)
+            XCTAssertEqual(BrowserShortcut.action(isVisible: true, searchSelection: enabled, hasAccess: true),
+                           .dismiss)
         }
     }
 
     func testDisabledOpeningDoesNotReadSelection() {
         for access in [false, true] {
-            XCTAssertEqual(BrowserShortcut.action(isVisible: false, searchSelection: false, hasAccess: access) {
-                XCTFail("Selection search must be opt-in")
-                return "selected text"
-            }, .open(query: nil))
+            XCTAssertEqual(BrowserShortcut.action(isVisible: false, searchSelection: false, hasAccess: access),
+                           .open, "Selection search must be opt-in")
         }
     }
 
-    func testEnabledOpeningWithoutAccessAsksForAccessWithoutReading() {
-        XCTAssertEqual(BrowserShortcut.action(isVisible: false, searchSelection: true, hasAccess: false) {
-            XCTFail("Reading without access cannot succeed")
-            return "selected text"
-        }, .needsAccess)
+    func testEnabledOpeningWithoutAccessAsksForAccess() {
+        XCTAssertEqual(BrowserShortcut.action(isVisible: false, searchSelection: true, hasAccess: false),
+                       .needsAccess)
     }
 
-    func testEnabledOpeningReadsSelectionOnce() {
-        var reads = 0
-        XCTAssertEqual(BrowserShortcut.action(isVisible: false, searchSelection: true, hasAccess: true) {
-            reads += 1
-            return "  café & https://example.com\n"
-        }, .open(query: "café & https://example.com"))
-        XCTAssertEqual(reads, 1)
+    func testEnabledOpeningWithAccessReadsSelection() {
+        XCTAssertEqual(BrowserShortcut.action(isVisible: false, searchSelection: true, hasAccess: true),
+                       .openWithSelection)
     }
 
-    func testUnavailableOrEmptySelectionOpensManualSearch() {
-        // Unsupported source apps and empty selections both produce no query.
-        for selection: String? in [nil, "", " \n\t"] {
-            XCTAssertEqual(BrowserShortcut.action(isVisible: false, searchSelection: true, hasAccess: true) {
-                selection
-            }, .open(query: nil))
+    func testUnavailableOrEmptySelectionGivesNoQuery() {
+        // Unsupported source apps and empty selections both open manual search.
+        for selection in ["", " \n\t"] {
+            XCTAssertNil(BrowserShortcut.query(fromSelection: selection))
         }
+        XCTAssertEqual(BrowserShortcut.query(fromSelection: "  café & https://example.com\n"),
+                       "café & https://example.com")
     }
 
     func testSelectionWhitespaceBecomesOneLine() {

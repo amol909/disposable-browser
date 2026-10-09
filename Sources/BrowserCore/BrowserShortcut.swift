@@ -2,20 +2,22 @@ import Foundation
 
 public enum BrowserShortcut: Equatable {
     case dismiss
-    case open(query: String?)
+    /// Open for manual search.
+    case open
     /// Selection search is on, but the app lacks Accessibility access to read it.
     case needsAccess
+    /// Selection search is on and allowed: open, then search the selection if it is readable.
+    case openWithSelection
 
     /// Longest query taken from a selection; longer selections are cut at a word boundary.
     public static let maxQueryLength = 500
 
-    /// Evaluate selection only for an opted-in opening, before the caller takes focus.
-    public static func action(isVisible: Bool, searchSelection: Bool, hasAccess: Bool,
-                              readSelection: () -> String?) -> Self {
+    /// Reads selection only for an opted-in opening; the caller reads before it takes focus.
+    public static func action(isVisible: Bool, searchSelection: Bool, hasAccess: Bool) -> Self {
         if isVisible { return .dismiss }
-        guard searchSelection else { return .open(query: nil) }
+        guard searchSelection else { return .open }
         guard hasAccess else { return .needsAccess }
-        return .open(query: readSelection().flatMap(query(fromSelection:)))
+        return .openWithSelection
     }
 
     /// Turns selected text into one search line: whitespace runs (including line breaks)
