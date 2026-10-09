@@ -15,11 +15,11 @@ cross-language core.
 4. Open **System Settings → Privacy & Security**. Below the message about
    Meerkat, click **Open Anyway**, then confirm. You do this only once.
 5. Find the meerkat icon in the menu bar. In Settings, set a shortcut and, to search
-   selected text, allow Accessibility access.
+   selected text, click **Allow…** next to Accessibility.
 
 The app is signed ad hoc. Each new version has a new signature, so macOS removes
-its Accessibility access after an update. If the Settings status shows
-**not allowed**, remove Meerkat from **Privacy & Security → Accessibility**,
+its Accessibility access after an update. If Settings shows **Allow…** next to
+Accessibility again, remove Meerkat from **Privacy & Security → Accessibility**,
 then allow it again.
 
 Meerkat was called Disposable Browser before version 0.2.0. Meerkat is a new app
@@ -51,10 +51,10 @@ script signs ad hoc and prints a warning.
 
 ## Use
 
-- On first launch, set **Show / dismiss browser** in Settings. The separate
-  **Search selected text** shortcut is optional. No global shortcuts are claimed
+- On first launch, set the **Open or close** shortcut in Settings. The separate
+  **Search selection** shortcut is optional. No global shortcuts are claimed
   without your choice.
-- Enable **Search selected text when opening** to search the source app's selection
+- Turn on **Search selection when opening** to search the source app's selection
   with the main shortcut. This is off by default. With no readable selection, it
   opens focused manual search. Without Accessibility access, it opens manual search
   with a notice, as the selection shortcut does. When already open, the shortcut
@@ -112,17 +112,17 @@ script signs ad hoc and prints a warning.
   also accept it. Each Accessibility request times out after 0.5 seconds, so a hung
   app cannot freeze the panel.
 
-Enable selection access using the button in Settings and macOS **Privacy & Security
-→ Accessibility**. Settings shows whether access is allowed. It updates when macOS reports an
-Accessibility change and when you return to the app; it does not poll.
-With ad hoc signing, macOS drops access after a rebuild; if the status shows not
-allowed, remove and re-add the app in that list, or sign with a certificate (see above). Unsupported apps or empty selections fall back to manual input
+Allow selection access with the **Accessibility** row in Settings and macOS **Privacy &
+Security → Accessibility**. The row shows **Allowed** when access is on. It updates when
+macOS reports an Accessibility change and when you return to the app; it does not poll.
+With ad hoc signing, macOS drops access after a rebuild; if the row shows **Allow…**
+again, remove and re-add the app in that list, or sign with a certificate (see above). Unsupported apps or empty selections fall back to manual input
 with an explanatory message. By default there is no clipboard mutation, simulated
 copy, screen capture, or permission request during ordinary searches.
 
 Some apps draw their own text and report no selection to Accessibility at all, for
-example GPUI terminals such as Herdr. For those, turn on **Copy selection when it can't
-be read** in Settings (off by default). When an app cannot report a selection:
+example GPUI terminals such as Herdr. For those, turn on **Copy when unreadable** in
+Settings (off by default). When an app cannot report a selection:
 
 - If that app changed the clipboard in the last 15 seconds while it was in front (for
   example a copy-on-select terminal), its clipboard text is searched at once. To know

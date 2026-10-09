@@ -25,81 +25,73 @@ struct SettingsView: View {
     private let appActivated = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 0) {
             header
-            if #available(macOS 26.0, *) {
-                controls.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
-            } else {
-                controls.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+            Form {
+                Section {
+                    LabeledContent("Open or close") {
+                        KeyboardShortcuts.Recorder(for: .toggleBrowser)
+                    }
+                    LabeledContent("Search selection") {
+                        KeyboardShortcuts.Recorder(for: .searchSelection)
+                    }
+                }
+                Section {
+                    Toggle("Search selection when opening", isOn: $searchSelectionOnOpen)
+                    Toggle("Copy when unreadable", isOn: $copyFallback)
+                        .help("For apps that hide their text, such as some terminals. Uses that app's copy from the last 15 seconds, or sends Copy and then restores your clipboard.")
+                    LabeledContent("Accessibility") {
+                        if hasAccess {
+                            Label("Allowed", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        } else {
+                            Button("Allow…") { Selection.requestPermission() }
+                        }
+                    }
+                    .help("Needed to read selected text. If access shows as not allowed while it is on in System Settings, remove Meerkat there and add it again.")
+                }
+                Section {
+                    Picker("Search engine", selection: $engine) {
+                        ForEach(SearchEngine.allCases, id: \.rawValue) { engine in
+                            Text(engine.rawValue).tag(engine.rawValue)
+                        }
+                    }
+                    Picker("Website view", selection: $viewMode) {
+                        Text("Mobile").tag("Mobile")
+                        Text("Desktop").tag("Desktop")
+                    }
+                    .pickerStyle(.segmented)
+                }
             }
-            Text("Allow Meerkat in System Settings → Privacy & Security → Accessibility. If the status shows not allowed while the switch there is on, remove and re-add the app. Some apps do not expose selected text; without a selection, opening falls back to manual search.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("Closing discards the page, not cookies or logins. This is not private browsing.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .formStyle(.grouped)
+            .scrollDisabled(true)
         }
-        .padding(20)
-        .frame(width: 480)
+        .frame(width: 440)
+        .fixedSize(horizontal: false, vertical: true)
+        .onAppear { hasAccess = AXIsProcessTrusted() }
+        .onReceive(accessChanged) { _ in hasAccess = AXIsProcessTrusted() }
+        .onReceive(appActivated) { _ in hasAccess = AXIsProcessTrusted() }
     }
 
     /// The app icon from the bundle (AppIcon.icns), the name, and the version.
     private var header: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
-                .frame(width: 64, height: 64)
+                .frame(width: 48, height: 48)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Meerkat").font(.title2.weight(.semibold))
-                Text("A quick look at the web, then back to work.")
-                    .foregroundStyle(.secondary)
+                Text("Meerkat").font(.title3.weight(.semibold))
                 // A build that is not an app bundle (swift run) has no version.
                 if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
                     Text("Version \(version)").font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Spacer()
         }
         .accessibilityElement(children: .combine)
-    }
-
-    private var controls: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            KeyboardShortcuts.Recorder("Show / dismiss browser:", name: .toggleBrowser)
-            Toggle("Search selected text when opening", isOn: $searchSelectionOnOpen)
-                .toggleStyle(.switch)
-            KeyboardShortcuts.Recorder("Search selected text (optional):", name: .searchSelection)
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Copy selection when it can't be read", isOn: $copyFallback)
-                    .toggleStyle(.switch)
-                Text("For apps that hide their text from Accessibility, such as some terminals. Uses a copy that app made in the last 15 seconds (copy-on-select); otherwise sends Copy, then restores your clipboard.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Picker("Search engine", selection: $engine) {
-                ForEach(SearchEngine.allCases, id: \.rawValue) { engine in
-                    Text(engine.rawValue).tag(engine.rawValue)
-                }
-            }
-            Picker("Website view", selection: $viewMode) {
-                Text("Mobile").tag("Mobile")
-                Text("Desktop").tag("Desktop")
-            }
-            .pickerStyle(.segmented)
-            HStack(spacing: 8) {
-                Label(hasAccess ? "Selected-text access allowed" : "Selected-text access not allowed",
-                      systemImage: hasAccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .foregroundStyle(hasAccess ? .green : .orange)
-                if !hasAccess {
-                    Button("Enable…") { Selection.requestPermission() }
-                }
-            }
-            .onAppear { hasAccess = AXIsProcessTrusted() }
-            .onReceive(accessChanged) { _ in hasAccess = AXIsProcessTrusted() }
-            .onReceive(appActivated) { _ in hasAccess = AXIsProcessTrusted() }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
