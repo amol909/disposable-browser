@@ -7,8 +7,10 @@ fi
 ROOT="$(dirname "$(dirname "$(realpath "$0")")")"
 cd "$ROOT"
 swift test
-swift build -c release
-BIN="$(swift build -c release --show-bin-path)"
+# Universal binary: macOS 14 still runs on Intel Macs.
+ARCHS=(--arch arm64 --arch x86_64)
+swift build -c release "${ARCHS[@]}"
+BIN="$(swift build -c release "${ARCHS[@]}" --show-bin-path)"
 APP="$ROOT/dist/Disposable Browser.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/DisposableBrowser" "$APP/Contents/MacOS/DisposableBrowser"
