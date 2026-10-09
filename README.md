@@ -3,6 +3,25 @@
 A macOS-first, keyboard-invoked peek browser. Native Swift/AppKit panel with
 WKWebView; no bundled Chromium or shared cross-language core.
 
+## Install (macOS 14+)
+
+1. Download `DisposableBrowser-<version>.zip` from the
+   [latest release](https://github.com/amol909/disposable-browser/releases/latest).
+2. Unzip it and move **Disposable Browser.app** to `/Applications`.
+3. Open the app. The app is not notarized by Apple, so macOS blocks the first launch
+   and says it cannot verify the developer.
+4. Open **System Settings → Privacy & Security**. Below the message about
+   Disposable Browser, click **Open Anyway**, then confirm. You do this only once.
+5. Find the globe icon in the menu bar. In Settings, set a shortcut and, to search
+   selected text, allow Accessibility access.
+
+The app is signed ad hoc. Each new version has a new signature, so macOS removes
+its Accessibility access after an update. If the Settings status shows
+**not allowed**, remove Disposable Browser from **Privacy & Security → Accessibility**,
+then allow it again.
+
+Alternatively, build the app from source as described below.
+
 ## Build and launch (macOS 14+)
 
 Install Xcode 26+ or command-line tools providing Swift 6.2+ (required by
