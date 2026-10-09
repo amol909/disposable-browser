@@ -26,6 +26,7 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            header
             if #available(macOS 26.0, *) {
                 controls.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
             } else {
@@ -40,6 +41,26 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 480)
+    }
+
+    /// The app icon from the bundle (AppIcon.icns), the name, and the version.
+    private var header: some View {
+        HStack(spacing: 14) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 64, height: 64)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Meerkat").font(.title2.weight(.semibold))
+                Text("A quick look at the web, then back to work.")
+                    .foregroundStyle(.secondary)
+                // A build that is not an app bundle (swift run) has no version.
+                if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+                    Text("Version \(version)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var controls: some View {
